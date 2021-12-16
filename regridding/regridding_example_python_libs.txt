@@ -1,0 +1,9 @@
+https://cis.readthedocs.io/en/stable/collocation_examples.html#examples-of-collocation-of-ungridded-data-on-to-gridded
+
+https://github.com/NCAS-CMS/cf-training/tree/master/full_course/notebooks
+
+https://github.com/NCAS-CMS/cf-training/blob/master/full_course/pdf/cf-python_regridding.pdf
+
+https://github.com/NCAS-CMS/cf-training/blob/master/short_course/demo_in_under_an_hour.ipynb
+
+http://chris35wills.github.io/gridding_data/
