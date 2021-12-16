@@ -1,0 +1,3 @@
+[submodule "scripts/Spatial_overlay_operations"]
+	path = scripts/Spatial_overlay_operations
+	url = https://github.com/PhilipeRLeal/Spatial_overlay_operations
