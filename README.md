@@ -1,1 +1,1 @@
-# xarray_case_studies
+# xarray case studies
