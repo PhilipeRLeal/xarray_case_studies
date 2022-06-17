@@ -6,190 +6,202 @@
 
 # https://stackoverflow.com/questions/40342355/how-can-i-generate-a-regular-geographic-grid-using-python
 
-
-
+from multiprocessing import Pool
 import shapely
 import pyproj
-import multiprocessing
 import geopandas as gpd
 import numpy as np
 from time import time
 import pandas as pd
-import os
 import copy
+import matplotlib.pyplot as plt
+import os
 
-# # Fetching some basic data
-
-
-
-# Choosing a projected coordinate system (therefore, in meters for a given ROI)
+from serial_gridding import getRoi
 
 
+def splitGrid(xmin,
+              ymin,
+              xmax,
+              ymax,
+              nsplits,  # in target units
+              ):
 
-def info():
-    #print('module name:', __name__)
-    print('parent process:', os.getppid())
-    print('process id:', os.getpid(), '  -----> Complete')
+    XBlocks = np.linspace(xmin, xmax, nsplits)
+    XBlocks = [(xmin, xmax) for xmin, xmax in zip(XBlocks[:-1], XBlocks[1:])]
+    YBlocks = np.linspace(ymin, ymax, nsplits)
+    YBlocks = [(ymin, ymax) for ymin, ymax in zip(YBlocks[:-1], YBlocks[1:])]
 
-def _regularGrid_multiprocessing(x, y,
-                                 dx, dy,
-                                 q=None):
-    
-
-    p = shapely.geometry.box(x, y, x + dx, y + dy)
-    if q:
-        q.put(p)
-    else:
-        return p
-    
-    info()
+    return XBlocks, YBlocks
 
 
-def fetch_base_points(xmin,
-                      ymin, xmax, ymax, 
-                      dx, dy,
-                      use_Queue=False,
-                      verbose=False):
+def generate_regularGrid(xmin,
+                         ymin,
+                         xmax,
+                         ymax,
+                         origin_crs,
+                         target_crs,
+                         dx=5,  # in target units
+                         dy=5,  # in target units
+                         return_grid_in_original_crs=False,
+                         verbose=False) -> gpd.GeoSeries:
+    """Generate a Regular Gridded Surface.
 
-    combinations = []
-    processess = []
-    if use_Queue:
-        q =  multiprocessing.Queue()
-    
+    Parameters
+    ----------
+    xmin : Float
+        DESCRIPTION.
+    ymin : Float
+        DESCRIPTION.
+    xmax : Float
+        DESCRIPTION.
+    ymax : Float
+        DESCRIPTION.
+    origin_crs : TYPE
+        DESCRIPTION.
+    target_crs : TYPE
+        DESCRIPTION.
+    dx : Float, optional.
+        the spacing distance between grid (in target units). The default is 5.
+    dy : Float, optional.
+        the spacing distance between grid (in target units). The default is 5.
+    return_grid_in_original_crs : Bool, optional
+        Boolean parameter that constrols whether the grid should
+        be returned in the original crs, or not.
+        If True, the grid will be returned in the original crs
+        If False (default), the grid will be returned in the target crs.
+
+    verbose : Bool, optional
+        DESCRIPTION. The default is False.
+
+    Returns
+    -------
+    RegularGrid : geopandas.GeoSeries
+        the regular grid.
+    dt : datetime.timedelta
+        The timedelta taken for generating this grid.
+
+    """
+
+    RegularGrid = []
+
     x = copy.copy(xmin) - dx
 
     while x <= xmax:
         if verbose:
-            print('x <= xmax : {0} <- {1}: {2}'.format(x, xmax, x < xmax))
+            print(
+                'x <= xmax : {0:.4f} <- {1:.4f}: {2}'.format(x,
+                                                             xmax,
+                                                             x < xmax)
+            )
         y = copy.copy(ymin) - dy
         while y <= ymax:
             if verbose:
-                print('y <= ymax : {0} <- {1}: {2}'.format(y, ymax, x < ymax))
+                print(
+                    'y <= ymax : {0:.4f} <- {1:.4f}: {2}'.format(y,
+                                                                 ymax,
+                                                                 x < ymax)
+                )
 
-            if use_Queue:
-                p = multiprocessing.Process(target=_regularGrid_multiprocessing, args=(x, y, dx, dy, q))
-                processess.append(p)
-                p.start()
-
-            else:
-                combinations.append( (x, y, dx, dy))
-
+            p = shapely.geometry.box(x, y, x + dx, y + dy)
+            RegularGrid.append(p)
             y += dy
         x += dx
-        
-    if use_Queue:
-        return processess
-    
-    else:
-        return combinations
 
-def regularGrid_multiprocessing(xmin, ymin, xmax, ymax,
-                                origin_crs, target_crs,
-                                dx = 5, # in target units
-                                dy = 5, # in target units
-                                return_grid_in_original_crs=False,
-                                use_pool=True,
-                                verbose=False):
-    T0 = time()
-    Transformer = pyproj.Transformer.from_crs(origin_crs, target_crs , always_xy=True)
-
-    xmin, ymin = Transformer.transform(xmin, ymin)
-
-    xmax, ymax = Transformer.transform(xmax, ymax)
-
-    if use_pool:
-        combinations = fetch_base_points(xmin, ymin, xmax, ymax, dx, dy, use_Queue=False, verbose=verbose)
-        with multiprocessing.Pool(multiprocessing.cpu_count()) as myPool:
-            RegularGrid = myPool.starmap(_regularGrid_multiprocessing, combinations)
-
-
-    else: # Using Processes
-
-        combinations = fetch_base_points(xmin, ymin, xmax, ymax, dx, dy, use_Queue=True, verbose=verbose)
-        [p.join() for p in processess]
-        
-        RegularGrid = q.get()
-
-    RegularGrid = gpd.GeoSeries(RegularGrid, crs=target_crs, name='geometry')
+    RegularGrid = gpd.GeoSeries(RegularGrid,
+                                crs=target_crs,
+                                name='geometry')
 
     if return_grid_in_original_crs:
 
         RegularGrid = RegularGrid.to_crs(origin_crs)
-    
+
+    return RegularGrid
+
+
+def _parallelGridding(listOfBounds,
+                      nProcesses=None,
+                      origin_crs='epsg:4326',
+                      target_crs='epsg:5880',
+                      dx=500_000,
+                      dy=500_000,
+                      return_grid_in_original_crs=True,
+                      verbose=False):
+
+    T0 = time()
+
+    iterables = [(xmin, ymin, xmax, ymax,
+                  origin_crs,
+                  target_crs,
+                  dx,
+                  dy,
+                  return_grid_in_original_crs,
+                  verbose) for (xmin, ymin, xmax, ymax) in listOfBounds]
+
+    with Pool(nProcesses) as p:
+        Results = p.starmap(generate_regularGrid, iterables)
+        Results = pd.concat(Results)
     dt = time() - T0
-    
+
+    print('Time Taken: {0}'.format(dt))
+    return Results, dt
+
+
+def parallelGridding(roi,
+                     nsplits,
+                     nProcesses,
+                     origin_crs,
+                     target_crs,
+                     *args,
+                     **kwargs
+                     ):
+    (xmin,
+     ymin,
+     xmax,
+     ymax) = roi.bounds
+
+    Transformer = pyproj.Transformer.from_crs(
+        origin_crs, target_crs, always_xy=True)
+    xmin, ymin = Transformer.transform(xmin, ymin)
+
+    xmax, ymax = Transformer.transform(xmax, ymax)
+
+    XBlocks, YBlocks = splitGrid(xmin, ymin, xmax, ymax, nsplits=nsplits)
+
+    listOfBounds = [(xmin, ymin, xmax, ymax)
+                    for (xmin, xmax) in XBlocks for (ymin, ymax)
+                    in YBlocks]
+
+    RegularGrid, dt = _parallelGridding(listOfBounds,
+                                        nProcesses,
+                                        origin_crs,
+                                        target_crs,
+                                        *args, **kwargs)
     return RegularGrid, dt
 
 
-
 if __name__ == '__main__':
-    
-    runs = {'Pool':True, 'Process':False, 'serial':None}
-    speedups = {'Pool':[],
-                        
-                'Process':[],
-                          
-                'serial':[],
-                          
-                }
-    
-    
-    Range = range(1000_000, 100_000, -50000)
-    
-    if len(Range) > 20:
-        raise TypeError('Range is too long')
-    
-    for key, method in runs.items():
-        for i in Range:
+    T0 = time()
+    ROI, GeoSeries = getRoi()
+    nProcesses = os.cpu_count()
 
-            dts = []
-            for i in range(5):
-                
-                if key == 'serial':
-                    RegularGrid, dt = generate_regularGrid(*ROI.bounds,
-                                                   origin_crs='epsg:4326',
-                                                   target_crs='epsg:5880', # SIRGAS 2000 - Polyconic
-                                                   dx= i,
-                                                   dy = i,
-                                                   return_grid_in_original_crs=True,
-                                                   verbose=False)
+    print("Using {0} Cores".format(nProcesses))
+    RegularGrid, dt = parallelGridding(ROI,
+                                       nsplits=4,
+                                       nProcesses=nProcesses,
+                                       origin_crs='epsg:4326',
+                                       target_crs='epsg:5880',
+                                       dx=200000,
+                                       dy=200000,
+                                       return_grid_in_original_crs=False)
 
-
-                else:
-
-                    RegularGrid, dt = regularGrid_multiprocessing(*ROI.bounds,
-                                                                origin_crs='epsg:4326',
-                                                                target_crs='epsg:5880', # SIRGAS 2000 - Polyconic
-                                                                dx= i,
-                                                                dy = i,
-                                                                return_grid_in_original_crs=False,
-                                                                use_pool=method,
-                                                                verbose=False)
-                del RegularGrid
-                    
-            speedups[key].append(dt)
-            
-                
-        
-    speedups = pd.DataFrame(speedups)
-    sppedups.index.name = 'Trials'
-    sppedups.columns.name = 'Runs'
-    speedups = sppedups.stack()
-    print(speedups.head())
-    ######################### Plotting
-
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
-        
-    sns.boxplot(df = speedups, x='Trials', y=['Runs'])
-    plt.title('Speed ups')
-        
-    plt.figure()
-    ax = geometry.plot(facecolor='blue')
-    RegularGrid.plot(ax=ax, edgecolor='k', facecolor=(0.5,0.5,0.5,0.2))
-    plt.title('Gridding using {0}'.format(key))
+    GeoSeries = GeoSeries.to_crs(RegularGrid.crs)
+    ax = GeoSeries.plot(facecolor='blue')
+    RegularGrid.plot(ax=ax,
+                     edgecolor='gray',
+                     linewidth=0.2,
+                     facecolor=(0.5, 0.5, 0.5, 0.2))
     plt.show()
 
-
-
+    dt = time() - T0
+    print('Total Time Taken: {0}'.format(dt))
