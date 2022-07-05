@@ -10,6 +10,7 @@ from shapely import speedups
 speedups.disable()
 pd.set_option("display.max_rows", 5000)
 
+
 def get_transform_from_latlon(lat, lon):
     """ input 1D array of lat / lon and output an Affine transformation
     """
@@ -19,8 +20,9 @@ def get_transform_from_latlon(lat, lon):
     scale = Affine.scale(lon[1] - lon[0], lat[1] - lat[0])
     return trans * scale
 
+
 def get_xr_mask(shapes, coords, latitude='latitude', longitude='longitude',
-                 fill=np.nan, **kwargs):
+                fill=np.nan, **kwargs):
     """Rasterize a list of (geometry, fill_value) tuples onto the given
     xray coordinates. This only works for 1d latitude and longitude
     arrays.
@@ -56,154 +58,150 @@ def get_xr_mask(shapes, coords, latitude='latitude', longitude='longitude',
     """
     transform = get_transform_from_latlon(coords[latitude], coords[longitude])
     out_shape = (len(coords[latitude]), len(coords[longitude]))
-    raster = features.rasterize(shapes, 
+    raster = features.rasterize(shapes,
                                 out_shape=out_shape,
                                 fill=fill, transform=transform,
                                 dtype=float, **kwargs)
     spatial_coords = {latitude: coords[latitude], longitude: coords[longitude]}
     return xr.DataArray(raster, coords=spatial_coords, dims=(latitude, longitude))
 
+
 def _xr_rasterize(xr_da, geometry, reducers,
-                longitude='longitude', latitude='latitude'):
-    
-    """ 
+                  longitude='longitude', latitude='latitude'):
+    """
     Description:
-        
+
         This function is the base function for analysis of the \
         zonal statistics over a netcdf, by using a geopandas GeoSeries \
         as initial geometric inputs.
-        
-        
+
+
         Returns
             geopandas geodataframe (with the new statistics per variable of the netcdf)
-            
+
     """
-    
 
     # 2. create a list of tuples (shapely.geometry, id)
-    
+
     shape = [(geometry, 1)]
 
     # 3. create a new coord in the xr_da which will be set to the id in `shapes`
-    coord_name="zones"
-    xr_da[coord_name] = get_xr_mask(shape, xr_da.coords, 
-                               longitude=longitude, latitude=latitude)
+    coord_name = "zones"
+    xr_da[coord_name] = get_xr_mask(shape, xr_da.coords,
+                                    longitude=longitude, latitude=latitude)
 
-    zonal_stats_df =  (xr_da.to_dataframe().reset_index().groupby(coord_name).agg(reducers)
-                       .T.unstack().unstack().to_frame(name='stats'))
-    
+    zonal_stats_df = (xr_da.to_dataframe().reset_index().groupby(coord_name).agg(reducers)
+                      .T.unstack().unstack().to_frame(name='stats'))
+
     zonal_stats_df.index.names = ['zone', 'agg', 'var']
-    
+
     # Adding geometry to geopandas GeodataFrame
     zonal_stats_df['geometry'] = geometry
-    
+
     return gpd.GeoDataFrame(zonal_stats_df)
 
 
-def xr_rasterize(xr_da, gdf, 
+def xr_rasterize(xr_da, gdf,
                  reducers=['count', 'max', 'min', 'median', 'mean', 'std'],
                  longitude='longitude', latitude='latitude'):
-    
     '''
     Description:
-        
+
         This function applies a zonal statistics over a netcdf, by using a geopandas GeoSeries
         as initial geometric inputs.
-        
-    
+
+
     Parameters:
-    
+
         xr_da (xr.DataArray or xr.DataSet)
-        
+
         gdf (gpd.GeoDataFrame, gpd.GeoSeries)
-        
-        reducers (list of reduction functions): 
+
+        reducers (list of reduction functions):
             Standard functions are['count', 'max', 'min', 'median', 'mean', 'std']
-            
+
         longitude (string): name of the spatial coordinate relative to the xaxis
             Standard is 'longitude'
             Other dataset use for example: 'lon', 'x', 'xc'...
-            
+
         latitude (string): name of the spatial coordinate relative to the yaxis
             Standard is 'latitude'
             Other dataset use for example: 'lat', 'y', 'yc'...
-    
-    
+
+
     Returns
         geopandas geodataframe (with the new statistics per variable of the netcdf)
 
 
     # code origin: https://stackoverflow.com/questions/51398563/python-mask-netcdf-data-using-shapefile
 
-    
+
     '''
-    
-    
-    
+
     if isinstance(gdf, str):
         gdf = gpd.read_file(gdf)
-    
+
     results = []
-    
+
     for index, geom in gdf.geometry.items():
-        result = _xr_rasterize(xr_da=ds,  
+        result = _xr_rasterize(xr_da,
                                geometry=geom,
-                               reducers=reducers, 
-                               longitude='lon', 
+                               reducers=reducers,
+                               longitude='lon',
                                latitude='lat')
 
-    ####### Setting index:
-    
+    # Setting index:
+
         result_initial_index = result.index.names
-        
+
         temp_index_name = 'old_index'
-        
+
         if isinstance(gdf.index, pd.MultiIndex):
 
             old_index_names = gdf.index.names
             order = (list(old_index_names) + list(result_initial_index))
-        
-        elif isinstance(gdf.index, pd.Index) and not isinstance(gdf.index, pd.MultiIndex):
+
+        elif (isinstance(gdf.index, pd.Index)
+              and not isinstance(gdf.index, pd.MultiIndex)
+              ):
             old_index_name = str(gdf.index.name)
-            
-            order = ( [old_index_name] + list(result_initial_index))
-        
+
+            order = ([old_index_name] + list(result_initial_index))
+
         else:
             pass
 
-        if isinstance(gdf.index, pd.Index) and not isinstance(gdf.index, pd.MultiIndex):
-            
+        if (isinstance(gdf.index, pd.Index) and not
+            isinstance(gdf.index, pd.MultiIndex)
+            ):
             result[temp_index_name] = index
-            result = result.rename({temp_index_name:old_index_name}, axis=1)
-            
+            result = result.rename({temp_index_name: old_index_name}, axis=1)
+
         elif isinstance(gdf.index, pd.MultiIndex):
-            
-            
-            if len(result)>0:
+
+            if len(result) > 0:
                 result[temp_index_name] = [index] * result.shape[0]
-            
-                result[old_index_names] = result[temp_index_name].apply(pd.Series)
-            
+
+                result[old_index_names] = result[temp_index_name].apply(
+                    pd.Series)
 
                 result = result.drop(temp_index_name, axis=1)
                 result = result.set_index(old_index_names, append=True)
 
-            
             # Adding empty columns (old shp index to the empty result gdf)
-            
+
             elif len(result) == 0:
-                result = result.reindex(result.columns.tolist() + old_index_names, axis=1)
-        
-        result = result.reset_index()    
-                    
+                result = result.reindex(
+                    result.columns.tolist() + old_index_names, axis=1)
+
+        result = result.reset_index()
+
         # Concat
         results.append(result)
 
-        
-    ######### Final steps for gdf conversion   
-    
+    # Final steps for gdf conversion
+
     gdf_results = gpd.GeoDataFrame(pd.concat(results, axis=0, ignore_index=True),
-                                  crs = gdf.crs).set_index(order)
-    
+                                   crs=gdf.crs).set_index(order)
+
     return gdf_results
-    

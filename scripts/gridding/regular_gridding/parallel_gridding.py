@@ -5,7 +5,7 @@
 # Ref:
 
 # https://stackoverflow.com/questions/40342355/how-can-i-generate-a-regular-geographic-grid-using-python
-
+from collections import namedtuple
 from multiprocessing import Pool
 import shapely
 import pyproj
@@ -24,23 +24,25 @@ def splitGrid(xmin,
               ymin,
               xmax,
               ymax,
-              nsplits,  # in target units
+              nsplits
               ):
+    dx = (xmax - xmin)/nsplits
+    dy = (ymax - ymin)/nsplits
 
-    XBlocks = np.linspace(xmin, xmax, nsplits)
+    XBlocks = np.arange(xmin, xmax + dx, dx).copy()
     XBlocks = [(xmin, xmax) for xmin, xmax in zip(XBlocks[:-1], XBlocks[1:])]
-    YBlocks = np.linspace(ymin, ymax, nsplits)
+    YBlocks = np.arange(ymin, ymax + dy, dy).copy()
     YBlocks = [(ymin, ymax) for ymin, ymax in zip(YBlocks[:-1], YBlocks[1:])]
 
     return XBlocks, YBlocks
 
 
-def generate_regularGrid(xmin,
-                         ymin,
-                         xmax,
-                         ymax,
-                         origin_crs,
-                         target_crs,
+def generate_regularGrid(xmin: float,
+                         ymin: float,
+                         xmax: float,
+                         ymax: float,
+                         origin_crs: str,
+                         target_crs: str,
                          dx=5,  # in target units
                          dy=5,  # in target units
                          return_grid_in_original_crs=False,
@@ -85,28 +87,28 @@ def generate_regularGrid(xmin,
 
     RegularGrid = []
 
-    x = copy.copy(xmin) - dx
+    x = copy.copy(xmin)
 
-    while x <= xmax:
+    while x < xmax:
         if verbose:
             print(
                 'x <= xmax : {0:.4f} <- {1:.4f}: {2}'.format(x,
                                                              xmax,
                                                              x < xmax)
             )
-        y = copy.copy(ymin) - dy
-        while y <= ymax:
+        y = copy.copy(ymin)
+        while y < ymax:
             if verbose:
                 print(
                     'y <= ymax : {0:.4f} <- {1:.4f}: {2}'.format(y,
                                                                  ymax,
-                                                                 x < ymax)
+                                                                 y < ymax)
                 )
 
             p = shapely.geometry.box(x, y, x + dx, y + dy)
             RegularGrid.append(p)
-            y += dy
-        x += dx
+            y = copy.copy(y + dy)
+        x = copy.copy(x + dx)
 
     RegularGrid = gpd.GeoSeries(RegularGrid,
                                 crs=target_crs,
@@ -118,6 +120,29 @@ def generate_regularGrid(xmin,
 
     return RegularGrid
 
+
+def solveOverlappingPolygons(geoSeries):
+    polygons = geoSeries.geometry
+    non_overlapping = list()
+    overlappingPolygons = list()
+    for n, p in enumerate(polygons[:-1], 1):
+        overlappingCases = [p.overlaps(g) for g in polygons[n:]]
+        if not any(overlappingCases):
+            non_overlapping.append(p)
+        else:
+            for g in polygons[n:][overlappingCases]:
+                p = p.difference(g)
+            overlappingPolygons.append(p)
+
+    RegularGrid = gpd.GeoSeries(non_overlapping,
+                                crs=geoSeries.crs,
+                                name=geoSeries.name)
+
+    overlappingPolygons = gpd.GeoSeries(overlappingPolygons,
+                                        crs=geoSeries.crs,
+                                        name=geoSeries.name)
+
+    return RegularGrid.append(overlappingPolygons)
 
 def _parallelGridding(listOfBounds,
                       nProcesses=None,
@@ -140,11 +165,15 @@ def _parallelGridding(listOfBounds,
 
     with Pool(nProcesses) as p:
         Results = p.starmap(generate_regularGrid, iterables)
-        Results = pd.concat(Results)
-    dt = time() - T0
 
-    print('Time Taken: {0}'.format(dt))
-    return Results, dt
+    geoSeries = pd.concat(Results)
+
+    geoSeries = solveOverlappingPolygons(geoSeries)
+
+    dt = time() - T0
+    if verbose:
+        print('Parallel Processing Time Taken: {0}'.format(dt))
+    return geoSeries, dt
 
 
 def parallelGridding(roi,
@@ -162,41 +191,50 @@ def parallelGridding(roi,
 
     Transformer = pyproj.Transformer.from_crs(
         origin_crs, target_crs, always_xy=True)
+
     xmin, ymin = Transformer.transform(xmin, ymin)
 
     xmax, ymax = Transformer.transform(xmax, ymax)
 
-    XBlocks, YBlocks = splitGrid(xmin, ymin, xmax, ymax, nsplits=nsplits)
+    xmin = copy.copy(xmin) - 2 * kwargs.get("dx")
+    ymin = copy.copy(ymin) - 2 * kwargs.get("dy")
 
-    listOfBounds = [(xmin, ymin, xmax, ymax)
+    XBlocks, YBlocks = splitGrid(xmin, ymin, xmax, ymax, nsplits=nsplits)
+    bounds = namedtuple("Bounds", ["xmin","ymin","xmax","ymax"])
+    listOfBounds = [bounds(xmin, ymin, xmax, ymax)
                     for (xmin, xmax) in XBlocks for (ymin, ymax)
                     in YBlocks]
+    if kwargs.get("verbose", False):
+        [print(bounds) for bounds in listOfBounds]
 
     RegularGrid, dt = _parallelGridding(listOfBounds,
                                         nProcesses,
                                         origin_crs,
                                         target_crs,
-                                        *args, **kwargs)
+                                        *args,
+                                        **kwargs)
     return RegularGrid, dt
 
 
 if __name__ == '__main__':
     T0 = time()
     ROI, GeoSeries = getRoi()
-    nProcesses = os.cpu_count()
-
+    nProcesses = os.cpu_count()-2
     print("Using {0} Cores".format(nProcesses))
+    verbose = False
     RegularGrid, dt = parallelGridding(ROI,
-                                       nsplits=4,
+                                       nsplits=nProcesses,
                                        nProcesses=nProcesses,
                                        origin_crs='epsg:4326',
                                        target_crs='epsg:5880',
                                        dx=200000,
                                        dy=200000,
-                                       return_grid_in_original_crs=False)
+                                       return_grid_in_original_crs=False,
+                                       verbose=verbose)
 
     GeoSeries = GeoSeries.to_crs(RegularGrid.crs)
     ax = GeoSeries.plot(facecolor='blue')
+
     RegularGrid.plot(ax=ax,
                      edgecolor='gray',
                      linewidth=0.2,

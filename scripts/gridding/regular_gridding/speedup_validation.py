@@ -23,7 +23,7 @@ def speedupEvaluate():
 
     speedUps = {}
 
-    for gridsize in range(50_000, 200_000, 50_000):
+    for gridsize in range(5_000, 100_000, 5_000):
         kwargs["dx"] = gridsize
         kwargs["dy"] = gridsize
         speedUpPerCore = {}
@@ -49,12 +49,13 @@ def speedupEvaluate():
 
     speedUps = pd.DataFrame(speedUps)
 
-    return speedUps
+    return speedUps.T
 
 
 if __name__ == '__main__':
     speedUps = speedupEvaluate()
     ax = speedUps.plot()
-    ax.set_ylabel("Speedup")
+    ax.set_ylabel("Speedup (serial/paralel)")
     ax.set_xlabel("GridSize (in meters)")
     plt.show()
+    plt.savefig("Regular_Gridding_SpeedUp.png")
