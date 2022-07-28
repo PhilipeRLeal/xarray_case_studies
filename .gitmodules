@@ -1,3 +1,9 @@
 [submodule "scripts/Spatial_overlay_operations"]
 	path = scripts/Spatial_overlay_operations
 	url = https://github.com/PhilipeRLeal/Spatial_overlay_operations
+[submodule "spatialOverlayOperations"]
+	path = spatialOverlayOperations
+	url = https://github.com/PhilipeRLeal/spatialOverlayOperations.git
+[submodule "scripts/spatialOverlayOperations"]
+	path = scripts/spatialOverlayOperations
+	url = https://github.com/PhilipeRLeal/spatialOverlayOperations.git
